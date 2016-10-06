@@ -7,7 +7,10 @@ class Graph:
         for row in self.graph:
             row += [0]*(n - len(row))
         for i in range(n - len(self.graph)):
-            graph.append([0 for i in range(n)])
+            self.graph.append([0 for i in range(n)])
+
+    def enlarge(self):
+        self.resize(len(self.graph) + 1)
 
     def __init__(self, n):
         self.graph = [[0 for i in range(n)] for j in range(n)]
@@ -19,6 +22,13 @@ class Graph:
             target = target.id
         self.graph[origin][target] += amount
         self.graph[target][origin] -= amount
+
+    def get(self, origin, target):
+        if isinstance(origin, User):
+            origin = origin.id
+        if isinstance(target, User):
+            target = target.id
+        return self.graph[origin][target]
 
     def optimize(self):
         while True:

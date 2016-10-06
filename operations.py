@@ -35,6 +35,7 @@ class Cheque:
 class Cancel:
     def __init__(self, operation, comment=""):
         self.operation = operation
+        self.comment = comment
 
     def __str__(self):
         return "отмена операции <{operation}> {comment}".format(**self.__dict__)

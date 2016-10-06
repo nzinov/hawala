@@ -8,15 +8,14 @@ from settings import TOKEN
 
 shelf = shelve.open("data.db", writeback=True)
 if "users" not in shelf:
-    shelf["users"] = []
-    shelf["ids"] = {}
+    shelf["users"] = {}
     shelf["log"] = []
     shelf["graph"] = Graph(0)
     shelf.sync()
 USERS = shelf["users"]
-IDS = shelf["ids"]
 LOG = shelf["log"]
 GRAPH = shelf["graph"]
+
 
 # Enable logging
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -25,8 +24,9 @@ logger = logging.getLogger(__name__)
 
 
 def add_operation(operation):
-    log.append(operation)
+    LOG.append(operation)
     operation.apply(GRAPH)
+    shelf.sync()
 
 # Define a few command handlers. These usually take the two arguments bot and
 # update. Error handlers also receive the raised TelegramError object in error.
@@ -39,46 +39,41 @@ def help(bot, update):
 
 
 def debt(bot, update):
-    param = update.message.split()
-    if len(param) < 4:
+    param = update.message.text.split()
+    user = update.message.from_user.username
+    if len(param) < 3:
         return
-    origin, target = [USERS[IDS[el]] for el in param[1:3]]
-    add_operation(Debt(origin, target, int(param[3])))
+    target = USERS[param[1]]
+    add_operation(Debt(user, target, int(param[2])))
     update.message.reply_text('Готово!')
 
 
 def log(bot, update):
-    param = update.message.split()
+    param = update.message.text.split()
     count = 10
     if len(param) > 1:
         count = int(param[1])
     update.message.reply_text('\n'.join(["{}: {}".format(*el) for el in enumerate(LOG[-count:])]))
 
 def cancel(bot, update):
-    param = update.message.split()
+    param = update.message.text.split()
     if len(param) < 2:
         return
     add_operation(Cancel(LOG[-int(param[1])]))
+    update.message.reply_text('Отменено!')
 
 def show(bot, update):
-    param = update.message.split()
-    if len(param) < 2:
-        return
-    user = USERS[IDS[param[1]]]
-    update.message.reply_text('\n'.join(["{}: {}".format(USERS[i], GRAPH.graph[user.id][i]) for i in range(len(GRAPH.graph))]))
+    user = update.message.from_user.username
+    user = USERS[user]
+    data = [(name, GRAPH.get(user, USERS[name])) for name in USERS]
+    update.message.reply_text("Ваши долги:\n"+'\n'.join(["{}: {}".format(*el) for el in data if el[1] != 0]))
 
 def add(bot, update):
-    param = update.message.split()
-    if len(param) < 2:
-        return
-    GRAPH.resize(len(GRAPH.graph) + 1)
-    USERS.append(User(len(USERS), param[1]))
-
-    
-
-
-
-
+    user = update.message.from_user.username
+    GRAPH.enlarge()
+    USERS[user] = User(len(USERS), user)
+    update.message.reply_text('Пользователь добавлен!')
+    shelf.sync()
 
 
 def error(bot, update, error):
@@ -106,12 +101,12 @@ def main():
 
     # Start the Bot
     updater.start_polling()
-
+    print("Start")
     # Run the bot until the you presses Ctrl-C or the process receives SIGINT,
     # SIGTERM or SIGABRT. This should be used most of the time, since
     # start_polling() is non-blocking and will stop the bot gracefully.
     updater.idle()
-    SHELF.close()
+    shelf.close()
 
 
 if __name__ == '__main__':
