@@ -24,10 +24,12 @@ class Graph:
         self.graph[target][origin] -= amount
 
     def get(self, origin, target):
+        print(origin, target)
         if isinstance(origin, User):
             origin = origin.id
         if isinstance(target, User):
             target = target.id
+        print(origin, target)
         return self.graph[origin][target]
 
     def optimize(self):
@@ -37,6 +39,8 @@ class Graph:
                 origin = None
                 target = None
                 for j in range(len(self.graph)):
+                    if j == center:
+                        continue
                     if self.graph[center][j] > 0:
                         target = j
                     if self.graph[center][j] < 0:
