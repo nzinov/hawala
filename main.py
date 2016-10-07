@@ -6,15 +6,11 @@ from user import User
 from operations import *
 from settings import TOKEN
 
-shelf = shelve.open("data.db", writeback=True)
-if "users" not in shelf:
-    shelf["users"] = {}
-    shelf["log"] = []
-    shelf["graph"] = Graph(0)
-    shelf.sync()
-USERS = shelf["users"]
-LOG = shelf["log"]
-GRAPH = shelf["graph"]
+
+# Enable logging
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 
 def normalize_name(name):
@@ -23,114 +19,113 @@ def normalize_name(name):
     return name
 
 
-# Enable logging
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-                    level=logging.INFO)
-logger = logging.getLogger(__name__)
+help_lines = {}
+handlers = []
 
 
-def add_operation(operation):
-    LOG.append(operation)
-    operation.apply(GRAPH)
-    shelf.sync()
+class handler:
+    def __init__(self, func):
+        self.command = func.__name__
+        help_lines[self.command] = func.__doc__
+        handlers.append(self.command)
+        self.func = func
 
-# Define a few command handlers. These usually take the two arguments bot and
-# update. Error handlers also receive the raised TelegramError object in error.
-def start(bot, update):
-    update.message.reply_text('Чтобы получить список команд, пишите /help')
+    def __call__(self, bot, update):
+        name = update.message.from_user.username
+        user = self.context.users.get(name, name)
+        param = update.message.text.split()[1:]
+        try:
+            reply = list(self.func(self.context, user, *param))
+        except (TypeError, ValueError) as e:
+            logger.warn(e.args)
+            update.message.reply_text("Недопустимые аргументы. Использование: {}".format(help_lines[self.command]))
+        else:
+            update.message.reply_text("\n".join(reply))
+        self.context.shelf.sync()
 
-
-def help(bot, update):
-    update.message.reply_text("""/register - вступить в Хавалу
-/list - список пользователей
-/debt <пользователь> <сумма> -записать, что вы должны
-/show - список ваших долгов
-/log - журнал операций
-/cancel <номер> - отменить операцию""")
-
-
-def debt(bot, update):
-    param = update.message.text.split()
-    user = USERS[update.message.from_user.username]
-    if len(param) < 3:
-        update.message.reply_text('Слишком мало аргументов: /debt <пользователь> <сумма>')
-        return
-    target = USERS[normalize_name(param[1])]
-    add_operation(Debt(user, target, int(param[2])))
-    update.message.reply_text('Готово!')
+    def __get__(self, obj, cls):
+        self.context = obj
+        return self
 
 
-def log(bot, update):
-    param = update.message.text.split()
-    count = 10
-    if len(param) > 1:
-        count = int(param[1])
-    update.message.reply_text('\n'.join(["{}: {}".format(*el) for el in enumerate(reversed(LOG[-count:]))]))
+class Context:
+    def __init__(self, shelf):
+        self.shelf = shelf
+        if not "users" in shelf:
+            shelf["users"] = {}
+            shelf["log"] = []
+            shelf["graph"] = Graph(0)
+            shelf.sync()
+        self.users = shelf["users"]
+        self.log = shelf["log"]
+        self.graph = shelf["graph"]
+        self.updater = Updater(TOKEN)
+        for command in handlers:
+            self.updater.dispatcher.add_handler(CommandHandler(command, getattr(self, command)))
+
+    def idle(self):
+        self.updater.start_polling()
+        self.updater.idle()
+
+    def add_operation(self, operation):
+        self.log.append(operation)
+        operation.apply(self)
+        shelf.sync()
+
+    @handler
+    def start(self, user):
+        "вступить в Хавалу"
+        if isinstance(user, User):
+            yield "Вы уже зарегистрированы"
+            return
+        self.graph.enlarge()
+        self.users[user] = User(len(self.users), user)
+        yield "Пользователь добавлен!"
+        yield "Чтобы получить список команд, пишите /help"
+
+    @handler
+    def help(self, user):
+        "показать эту справку"
+        for command, info in help_lines.items():
+            yield "/{} - {}".format(command, info)
+
+    @handler
+    def debt(self, user, target, amount, comment=""):
+        "записать ваш долг <пользователю> <величиной> рублей с опциональным <комментарием>"
+        target = self.users[normalize_name(target)]
+        self.add_operation(Debt(user, target, int(amount), user, comment))
+        yield 'Готово!'
+
+    @handler
+    def show(self, user, count=10):
+        "показать последние <число> операций (по умолчанию 10)"
+        for el in enumerate(reversed(self.log[-int(count):])):
+            yield "{}: {}".format(*el)
 
 
-def cancel(bot, update):
-    param = update.message.text.split()
-    if len(param) < 2:
-        update.message.reply_text('Слишком мало аргументов: /cancel <номер операции>')
-        return
-    add_operation(Cancel(LOG[-int(param[1])]))
-    update.message.reply_text('Отменено!')
+    @handler
+    def cancel(self, user, number, comment=""):
+        "отменить операцию <номер> с конца"
+        self.add_operation(Cancel(self.log[-int(number)], user, comment))
+        yield 'Отменено!'
 
+    @handler
+    def my(self, user):
+        "показать ваши долги"
+        data = [(name, self.graph.get(user, self.users[name])) for name in self.users]
+        yield "Ваши долги:"
+        for el in data:
+            if el[1] != 0:
+                yield "{}: {}".format(*el)
 
-def show(bot, update):
-    user = update.message.from_user.username
-    user = USERS[user]
-    data = [(name, GRAPH.get(user, USERS[name])) for name in USERS]
-    update.message.reply_text("Ваши долги:\n"+'\n'.join(["{}: {}".format(*el) for el in data if el[1] != 0]))
-
-
-def register(bot, update):
-    user = update.message.from_user.username
-    if user in USERS:
-        update.message.reply_text('Вы уже зарегистрированы')
-        return
-    GRAPH.enlarge()
-    USERS[user] = User(len(USERS), user)
-    update.message.reply_text('Пользователь добавлен!')
-    shelf.sync()
-
-
-def list_users(bot, update):
-    update.message.reply_text(', '.join(USERS.keys()))
-
-def error(bot, update, error):
-    logger.warn('Update "%s" caused error "%s"' % (update, error))
-
-
-def main():
-    # Create the EventHandler and pass it your bot's token.
-    updater = Updater(TOKEN)
-
-    # Get the dispatcher to register handlers
-    dp = updater.dispatcher
-
-    # on different commands - answer in Telegram
-    dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(CommandHandler("help", help))
-    dp.add_handler(CommandHandler("debt", debt))
-    dp.add_handler(CommandHandler("log", log))
-    dp.add_handler(CommandHandler("cancel", cancel))
-    dp.add_handler(CommandHandler("register", register))
-    dp.add_handler(CommandHandler("show", show))
-    dp.add_handler(CommandHandler("list", list_users))
-
-    # log all errors
-    dp.add_error_handler(error)
-
-    # Start the Bot
-    updater.start_polling()
-    print("Start")
-    # Run the bot until the you presses Ctrl-C or the process receives SIGINT,
-    # SIGTERM or SIGABRT. This should be used most of the time, since
-    # start_polling() is non-blocking and will stop the bot gracefully.
-    updater.idle()
-    shelf.close()
+    @handler
+    def list(self, user):
+        "показать список пользователей"
+        yield "Список пользователей:"
+        for el in self.users:
+            yield str(el)
 
 
 if __name__ == '__main__':
-    main()
+    shelf = shelve.open("data.db", writeback=True)
+    Context(shelf).idle()
